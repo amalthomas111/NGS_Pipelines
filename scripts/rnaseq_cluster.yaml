@@ -1,0 +1,23 @@
+__default__:
+    p : "cmb"
+    time : "30:00:00"
+    mem : "7000MB"
+    ntasks : "1"
+sort_singlebam:
+    mem : "20000MB"
+    ntasks : "4"
+sort_pairedbam:
+    mem : "20000MB"
+    ntasks : "4"
+indexbam_single:
+    mem : "12000MB"
+    ntasks : "4"
+indexbam_paired:
+    mem : "12000MB"
+    ntasks : "4"
+map_single_end:
+    mem : "60000MB"
+    ntasks : "1"
+map_paired_end:
+    mem : "60000MB"
+    ntasks : "1"

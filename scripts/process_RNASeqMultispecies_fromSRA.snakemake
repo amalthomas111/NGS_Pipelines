@@ -1,0 +1,777 @@
+import os,sys,glob,pysam,pybedtools
+from collections import Counter
+from collections import defaultdict
+import numpy as np
+from bx.intervals.intersection import IntervalTree
+
+if not os.path.exists("rnaseq_config.yaml"):
+        print("Error:rnaseq_config.yaml not found. Exiting!")
+        exit(1)
+if not os.path.exists("list.txt"):
+        print("Error:list.txt not found. You can create list.txt from"\
+              "runinfo file using srainfo.sh")
+        exit(1)
+
+configfile: 'rnaseq_config.yaml'
+SINGLE_SRR=[]
+PAIRED_SRR=[]
+SPECIES_SRR={}
+SPECIES_GSM={}
+GSM_SINGLE_DICT={}
+GSM_PAIRED_DICT={}
+
+specieslist = config["specieslist"]
+"""
+Input list.txt should be in this format:
+SRR306834	SINGLE	Pan_paniscus	RNA-Seq	cDNA	GSM752687
+SRR306835	SINGLE	Pan_paniscus	RNA-Seq	cDNA	GSM752688
+SRR306836	SINGLE	Pan_paniscus	RNA-Seq	cDNA	GSM752689
+SRR306837	SINGLE	Pan_paniscus	RNA-Seq	cDNA	GSM752690
+SRR306838	SINGLE	Homo_sapiens	RNA-Seq	cDNA	GSM752691
+SRR306839	SINGLE	Homo_sapiens	RNA-Seq	cDNA	GSM752692
+SRR306840	PAIRED	Homo_sapiens	RNA-Seq	cDNA	GSM752693
+First 3 columns are mandatory. if only first 3 columns are given
+then GSE columsn is assumed to be same as the first column and
+all samples are assumed to be be "RNA-Seq"
+"""
+
+for line in open("list.txt"):
+        if line!="\n" and line != "":
+                elements = line.strip().split("\t")
+                elements[2] = elements[2].replace(" ","_")
+                #print(line,str(len(elements)))
+                if len(elements) == 6 and elements[3].upper() == "RNA-SEQ":
+                        if elements[2] not in specieslist:
+                                print("*****NOT FOUND:",elements[0],elements[2])
+                                continue
+                        if elements[1].upper() == "SINGLE":
+                                SINGLE_SRR.append(elements[0])
+                                SPECIES_SRR[elements[0]]=elements[2]
+                                SPECIES_GSM[elements[5]]=elements[2]
+                                try:
+                                        GSM_SINGLE_DICT[elements[5]].append(elements[0])
+                                except KeyError:
+                                        GSM_SINGLE_DICT[elements[5]]=[]
+                                        GSM_SINGLE_DICT[elements[5]].append(elements[0])
+                        elif elements[1].upper() == "PAIRED":
+                                PAIRED_SRR.append(elements[0])
+                                SPECIES_SRR[elements[0]]=elements[2]
+                                SPECIES_GSM[elements[5]]=elements[2]
+                                try:
+                                        GSM_PAIRED_DICT[elements[5]].append(elements[0])
+                                except KeyError:
+                                        GSM_PAIRED_DICT[elements[5]]=[]
+                                        GSM_PAIRED_DICT[elements[5]].append(elements[0])
+                elif len(elements) == 3:
+                        if elements[2] not in specieslist:
+                                print("*****NOT FOUND:",elements[0],elements[2])
+                                continue
+                        if elements[1].upper() == "SINGLE":
+                                SINGLE_SRR.append(elements[0])
+                                SPECIES_SRR[elements[0]]=elements[2]
+                                SPECIES_GSM[elements[0]]=elements[2]
+                                try:
+                                        GSM_SINGLE_DICT[elements[0]].append(elements[0])
+                                except KeyError:
+                                        GSM_SINGLE_DICT[elements[0]]=[]
+                                        GSM_SINGLE_DICT[elements[0]].append(elements[0])
+                        elif elements[1].upper() == "PAIRED":
+                                PAIRED_SRR.append(elements[0])
+                                SPECIES_SRR[elements[0]]=elements[2]
+                                SPECIES_GSM[elements[0]]=elements[2]
+                                try:
+                                        GSM_PAIRED_DICT[elements[0]].append(elements[0])
+                                except KeyError:
+                                        GSM_PAIRED_DICT[elements[0]]=[]
+                                        GSM_PAIRED_DICT[elements[0]].append(elements[0])
+ALL_SRR = SINGLE_SRR + PAIRED_SRR
+GSM_SINGLE_DICT_KEYS = list(GSM_SINGLE_DICT.keys())
+GSM_PAIRED_DICT_KEYS = list(GSM_PAIRED_DICT.keys())
+
+print("Single end:\n",SINGLE_SRR,"\nGSM single dict:")
+print(GSM_SINGLE_DICT)
+print("======================\n")
+print("Paired end:\n",PAIRED_SRR,"\nGSM paired dict:")
+print(GSM_PAIRED_DICT)
+print("======================\n")
+
+print("GSM single keys:\n",GSM_SINGLE_DICT_KEYS)
+print("\nGSM paired keys:\n",GSM_PAIRED_DICT_KEYS)
+#print("All libs:\n",ALL_SRR)
+
+def return_star_index(wildcards):
+        #print("star index:inputfile:",wildcards.sample)
+        return(config["{}_star_index".format(SPECIES_SRR[wildcards.sample])])
+def return_gtf(wildcards):
+        return(config["{}_gtf".format(SPECIES_GSM[wildcards.sample])])
+def return_gtf_bed(wildcards):
+        return(config["{}_bed".format(SPECIES_GSM[wildcards.sample])])
+def return_gtf_bed12(wildcards):
+        return(config["{}_bed12".format(SPECIES_GSM[wildcards.sample])])
+def merge_bams_single_input(wildcards):
+        #print("merge single:inputfile=",wildcards.sample)
+        return(["bams/srr_bam/single/{}.bam".format(srr) for srr in GSM_SINGLE_DICT[wildcards.sample]])
+def merge_bams_paired_input(wildcards):
+        #print("merge paired:inputfile=",wildcards.sample)
+        return(["bams/srr_bam/paired/{}.bam".format(srr) for srr in GSM_PAIRED_DICT[wildcards.sample]])
+
+rule all:
+    input:
+        expand('quality/{sample}_trimmed_fastqc.html',sample=SINGLE_SRR),
+        expand('quality/{sample}_1_val_1_fastqc.html',sample=PAIRED_SRR),
+        expand('quality/{sample}_2_val_2_fastqc.html',sample=PAIRED_SRR),
+        "mapping_stats.txt",
+        "qualityreport/multiqc_report.html",
+        expand('bams/{sample}.single.bam',sample=GSM_SINGLE_DICT_KEYS),
+        expand('bams/{sample}.paired.bam',sample=GSM_PAIRED_DICT_KEYS),
+        expand('bams/{sample}.single.bam.bai',sample=GSM_SINGLE_DICT_KEYS),
+        expand('bams/{sample}.paired.bam.bai',sample=GSM_PAIRED_DICT_KEYS),
+        expand('protocol/{sample}.single.txt',sample=GSM_SINGLE_DICT_KEYS),
+        #expand("protocol/{sample}.paired.txt",sample=GSM_PAIRED_DICT_KEYS),
+        expand('protocol/experiment/{sample}.single.txt',sample=GSM_SINGLE_DICT_KEYS),
+        expand("protocol/experiment/{sample}.paired.txt",sample=GSM_PAIRED_DICT_KEYS),
+        "protocol_information.txt",
+        "counts/success.txt"
+        #expand('counts/{sample}.single.stranded.counts',sample=GSM_SINGLE_DICT_KEYS),
+        #expand('counts/{sample}.single.unstranded.counts',sample=GSM_SINGLE_DICT_KEYS),
+        #expand('counts/{sample}.single.revstranded.counts',sample=GSM_SINGLE_DICT_KEYS),
+        #expand('counts/{sample}.paired.stranded.counts',sample=GSM_PAIRED_DICT_KEYS),
+        #expand('counts/{sample}.paired.unstranded.counts',sample=GSM_PAIRED_DICT_KEYS),
+        #expand('counts/{sample}.paired.revstranded.counts',sample=GSM_PAIRED_DICT_KEYS),
+
+rule fastqdump_paired:
+    input:
+        "rawreads/{sample}.sra"
+    output:
+        file1 = temp("rawreads/{sample}_1.fastq.gz"),
+        file2 = temp("rawreads/{sample}_2.fastq.gz")
+    params:
+        "rawreads"
+    message:
+        "Running fastqdump on paired: {wildcards.sample}"
+    shell:
+        """
+        fastq-dump --gzip --skip-technical --split-3  --dumpbase {input} -O {params}
+        """
+rule fastqdump_single:
+    input:
+        "rawreads/{sample}.sra"
+    output:
+        file1 = temp("rawreads/{sample}.fastq.gz")
+    message:
+        "Running fastqdump on single: {wildcards.sample}"
+    params:
+        "rawreads"
+    shell:
+        """
+        fastq-dump --gzip --skip-technical --dumpbase {input} -O {params}
+        """
+rule trim_adapters_paired:
+        input:
+                mate1 = 'rawreads/{sample}_1.fastq.gz',
+                mate2 = 'rawreads/{sample}_2.fastq.gz'
+        output:
+                fastq1 = temp('reads/{sample}_1_val_1.fq.gz'),
+                fastq2 = temp('reads/{sample}_2_val_2.fq.gz')
+        message:
+                "Executing trimming on paired-end:{wildcards.sample}."
+        log:
+                "logs/{sample}.trim.log"
+        shell:
+                """
+                trim_galore --length 10 --paired --output_dir reads \
+                {input.mate1}  {input.mate2} &> {log}
+                """
+rule trim_adapters_single:
+        input:
+                'rawreads/{sample}.fastq.gz'
+        output:
+                temp('reads/{sample}_trimmed.fq.gz')
+        message:
+                "Executing trimming on single end:{wildcards.sample}."
+        log:
+                "logs/{sample}.trim.log"
+        shell:
+                """
+                trim_galore --length 10 --output_dir reads {input} &> {log}
+                """
+rule fastqc_paired:
+    input:
+        mate1 = "reads/{sample}_1_val_1.fq.gz",
+        mate2 = "reads/{sample}_2_val_2.fq.gz"
+    output:
+        output1 = "quality/{sample}_1_val_1_fastqc.html",
+        output2 = "quality/{sample}_2_val_2_fastqc.html"
+    message:
+        "Running paired fastqc on paired: {wildcards.sample}"
+    shell:
+        """
+        fastqc {input.mate1} {input.mate2} -o quality
+        """
+rule fastqc_single:
+    input:
+        'reads/{sample}_trimmed.fq.gz'
+    output:
+        'quality/{sample}_trimmed_fastqc.html'
+    message:
+        "Running single fastqc on single:{wildcards.sample}"
+    shell:
+        """
+        fastqc {input} -o quality
+        """
+rule multiqc:
+        input:
+                expand("quality/{sample}_trimmed_fastqc.html",sample=SINGLE_SRR),
+                expand("quality/{sample}_1_val_1_fastqc.html",sample=PAIRED_SRR)
+        output:
+                "qualityreport/multiqc_report.html"
+        message:
+                "Running multiqc"
+        shell:
+                """
+                multiqc quality -o qualityreport
+                """
+rule map_single_end:
+    input:
+        'reads/{sample}_trimmed.fq.gz'
+    output:
+        bam   = 'bams/srr_bam/single/{sample}.bam',
+    threads: 1
+    params:
+        prefix = 'bams/srr_bam/single/{sample}.',
+        index = return_star_index,
+        unmapped = 'bams/srr_bam/single/{sample}.unmapped.'
+    message:
+        "Executing map on single-end:{wildcards.sample}."
+    log:
+        "logs/{sample}.map.log"
+    shell:
+        r"""
+        STAR --runThreadN 1 \
+        --genomeDir {params.index} \
+        --outFileNamePrefix {params.prefix} --readFilesIn {input} \
+        --readFilesCommand zcat \
+        --quantMode GeneCounts \
+        --outFilterMultimapNmax 1 \
+        --outSAMtype BAM SortedByCoordinate \
+        --outBAMsortingThreadN 1 \
+        --outReadsUnmapped {params.unmapped} && \
+        mv {params.prefix}Aligned.sortedByCoord.out.bam {output.bam}
+        """
+rule map_paired_end:
+    input:
+        mate1 = 'reads/{sample}_1_val_1.fq.gz',
+        mate2 = 'reads/{sample}_2_val_2.fq.gz'
+    output:
+        bam   = 'bams/srr_bam/paired/{sample}.bam',
+    threads: 1
+    params:
+        prefix = 'bams/srr_bam/paired/{sample}.',
+        index = return_star_index,
+        unmapped = 'bams/srr_bam/paired/{sample}.unmapped.'
+    message:
+        "Executing map on paired-end:{wildcards.sample}."
+    shell:
+        r"""
+         STAR --genomeDir {params.index} \
+         --runThreadN 1 \
+         --outFileNamePrefix {params.prefix} --readFilesIn {input.mate1} {input.mate2} \
+         --outSAMtype BAM SortedByCoordinate \
+         --outFilterMultimapNmax 1 \
+         --readFilesCommand zcat \
+         --quantMode GeneCounts \
+         --outBAMsortingThreadN 1 \
+         --outReadsUnmapped {params.unmapped} && \
+        mv {params.prefix}Aligned.sortedByCoord.out.bam {output.bam}
+        """
+rule mergeSRRsingleunderGSM:
+        input: merge_bams_single_input
+        threads: 4
+        output: temp("bams/{sample}.single.tmp.bam")
+        message:
+                "Executing merging SRR single-end:{wildcards.sample}."
+        run:
+                if len(input) > 1:
+                        infiles = '  '.join(input)
+                        shell(r"""samtools merge --threads 4 \
+                        {output} {infiles}""")
+                elif len(input) == 1:
+                        infile = input[0]
+                        shell(""" mv {infile} {output}""")
+rule mergeSRRpairedunderGSM:
+        input: merge_bams_paired_input
+        threads: 4
+        output: temp("bams/{sample}.paired.tmp.bam")
+        message:
+                "Executing merging SRR paired-end: {wildcards.sample}"
+        run:
+                if len(input) > 1:
+                        infiles = '  '.join(input)
+                        shell(r"""samtools merge --threads 4 {output} \
+                        {infiles}""")
+                elif len(input) == 1:
+                        infile = input[0]
+                        shell("""mv {infile} {output}""")
+# sorting and indexing is done using sambamba because:
+# 1. samtools indexing fails for long chromosome\
+#       (Try using a csi index with min_shift = 14, n_lvls >= 6,
+#       samtools index: failed to create index for merged.sorted.bam":
+#                        Numerical result out of range")
+# 2. much faster than samtools
+rule sort_singlebam:
+        input: "bams/{sample}.single.tmp.bam"
+        threads: 4
+        output: "bams/{sample}.single.bam"
+        message:
+                "Executing bam sort on single-end:{wildcards.sample}"
+        shell:
+                """
+                sambamba sort -t 4 -m 18G -o {output} {input}
+                """
+rule sort_pairedbam:
+        input: "bams/{sample}.paired.tmp.bam"
+        threads: 4
+        output: "bams/{sample}.paired.bam"
+        message:
+                "Executing bam sort on paired-end:{wildcards.sample}"
+        shell:
+                """
+                sambamba sort -t 4 -m 18G -o {output} {input}
+                """
+
+rule indexbam_single:
+    input:
+        "bams/{sample}.single.bam"
+    output:
+        index = 'bams/{sample}.single.bam.bai'
+    threads:4
+    message:
+        "Executing index on single-end:{wildcards.sample}."
+    shell:
+        """
+        sambamba index -t 4 {input}
+        """
+#samtools index {input}
+rule indexbam_paired:
+    input:
+        "bams/{sample}.paired.bam"
+    output:
+        index = 'bams/{sample}.paired.bam.bai'
+    message:
+        "Executing index on paired-end:{wildcards.sample}."
+    shell:
+        """
+        sambamba index -t 4 {input}
+        """
+#samtools index {input}
+rule getmappingstats:
+        input:
+                expand("bams/{sample}.single.bam",sample=GSM_SINGLE_DICT_KEYS),
+                expand("bams/{sample}.paired.bam",sample=GSM_PAIRED_DICT_KEYS)
+        output:
+                "mapping_stats.txt"
+        message:
+                "Mapping stats"
+        shell:
+                """
+                grep "Uniquely mapped reads %" bams/srr_bam/*/*.Log.final.out |\
+                awk '{{print $1"\t"$7 }}'|sed 's/%//g'|\
+                sed 's/.Log.final.out://g' > {output}
+                """
+rule htseq_single_stranded:
+    input:
+        bam = "bams/{sample}.single.bam",
+        gtf = return_gtf
+    output:
+        out = "counts/{sample}.single.stranded.counts"
+    message:
+        "htseq stranded single-end: {wildcards.sample}"
+    shell:
+        r"""
+        samtools view {input.bam}|htseq-count --stranded=yes - {input.gtf} > \
+        {output.out}
+        """
+rule htseq_single_nostranded:
+    input:
+        bam = "bams/{sample}.single.bam",
+        gtf = return_gtf
+    output:
+        out = "counts/{sample}.single.unstranded.counts",
+    message:
+        "htseq nostranded single-end: {wildcards.sample}"
+    shell:
+        r"""
+        samtools view {input.bam}|htseq-count --stranded=no - {input.gtf} > \
+        {output.out}
+        """
+rule htseq_paired_stranded:
+    input:
+        bam = "bams/{sample}.paired.bam",
+        gtf = return_gtf
+    output:
+        out = "counts/{sample}.paired.stranded.counts",
+    message:
+        "htseq stranded paired-end: {wildcards.sample}"
+    shell:
+        r"""
+        samtools view {input.bam}|htseq-count --stranded=yes - {input.gtf} > \
+        {output.out}
+        """
+rule htseq_paired_nounstranded:
+    input:
+        bam = "bams/{sample}.paired.bam",
+        gtf = return_gtf
+    output:
+        out  = "counts/{sample}.paired.unstranded.counts",
+    message:
+        "htseq nostranded paired-end: {wildcards.sample}"
+    shell:
+        r"""
+        samtools view {input.bam}|htseq-count --stranded=no - {input.gtf} > \
+        {output.out}
+        """
+rule htseq_single_revstranded:
+    input:
+        bam = "bams/{sample}.single.bam",
+        gtf = return_gtf
+    output:
+        out = "counts/{sample}.single.revstranded.counts",
+    message:
+        "htseq rev stranded single-end: {wildcards.sample}"
+    shell:
+        """
+        samtools view {input.bam}|htseq-count --stranded=reverse - {input.gtf} > \
+        {output.out}
+        """
+rule htseq_paired_revstranded:
+    input:
+        bam = "bams/{sample}.paired.bam",
+        gtf = return_gtf
+    output:
+        out = "counts/{sample}.paired.revstranded.counts",
+    message:
+        "htseq rev stranded paired-end: {wildcards.sample}"
+    shell:
+        """
+        samtools view {input.bam}|htseq-count --stranded=reverse - {input.gtf} > \
+        {output.out}
+        """
+rule infer_protocol_single:
+    input:
+        bam = "bams/{sample}.single.bam",
+        index = "bams/{sample}.single.bam.bai",
+        gtf_bed = return_gtf_bed
+    output:
+        protocol = "protocol/{sample}.single.txt"
+    message:
+        "Infer protocol single-end: {wildcards.sample}"
+    run:
+        def read_bed_as_intervaltree(filepath):
+            bed_df = pybedtools.BedTool(filepath).sort().to_dataframe()
+            bed_df['chrom'] = bed_df['chrom'].astype(str)
+            bed_df['name'] = bed_df['name'].astype(str)
+            bed_grouped = bed_df.groupby('chrom')
+
+            bedint_tree = defaultdict(IntervalTree)
+            for chrom, df in bed_grouped:
+                df_list = zip(df['start'], df['end'], df['strand'])
+                for start, end, strand in df_list:
+                    bedint_tree[chrom].insert(start, end, strand)
+            return bedint_tree
+        def is_read_uniq_mapping(read):
+            if read.is_secondary:
+                return False
+            tags = dict(read.get_tags())
+            try:
+                nh_count = tags['NH']
+            except KeyError:
+                # Reliable in case of STAR
+                if read.mapping_quality == 255:
+                    return True
+                if read.mapping_quality < 1:
+                    return False
+                # NH tag not set so rely on flags
+                if read.flag in __SAM_NOT_UNIQ_FLAGS__:
+                    return False
+                else:
+                    raise RuntimeError('Malformed BAM?')
+            if nh_count == 1:
+                return True
+            return False
+        bam = input.bam
+        bed = input.gtf_bed
+        n_reads = 100000
+        if not os.path.exists(bam+".bai"):
+                pysam.index(bam)
+        bam = pysam.AlignmentFile(bam, 'rb')
+        bed = read_bed_as_intervaltree(bed)
+        strandedness = Counter()
+        iteration = 0
+        for read in bam.fetch():
+            if not is_read_uniq_mapping(read):
+                continue
+            if read.is_reverse:
+                mapped_strand = '-'
+            else:
+                mapped_strand = '+'
+            mapped_start = read.reference_start
+            mapped_end = read.reference_end
+            chrom = read.reference_name
+            gene_strand = list(set(bed[chrom].find(mapped_start, mapped_end)))
+            if len(gene_strand) != 1:
+                # Filter out genes with ambiguous strand info
+                # (those) that have a tx_start on opposite strands
+                continue
+            gene_strand = gene_strand[0]
+            strandedness['{}{}'.format(mapped_strand, gene_strand)] += 1
+            iteration += 1
+            if iteration >= n_reads:
+                break
+        strandedness['++'] += 1
+        strandedness['--'] += 1
+        strandedness['+-'] += 1
+        strandedness['-+'] += 1
+
+        total = sum(strandedness.values())
+        forward_mapped_reads = (strandedness['++'] + strandedness['--']) / total
+        reverse_mapped_reads = (strandedness['-+'] + strandedness['+-']) / total
+        ratio = forward_mapped_reads / reverse_mapped_reads
+        if np.isclose([np.abs(forward_mapped_reads-0.5)], [0],atol=0.12):
+            with open(output[0],"w") as out:
+                out.write(wildcards.sample+"\t"+'unstranded'+"\t"+
+                          str(forward_mapped_reads) +"\t"+
+                          str(reverse_mapped_reads)+ "\t" + str(total)+"\n")
+        elif forward_mapped_reads >= 0.5:
+            with open(output[0],"w") as out:
+                out.write(wildcards.sample+"\t"+'forward'+ "\t"+
+                          str(forward_mapped_reads) + "\t" +
+                          str(reverse_mapped_reads)+"\t"+ str(total)+"\n")
+        else:
+            with open(output[0],"w") as out:
+                out.write(wildcards.sample+"\t"+'reverse'+ "\t" +
+                          str(forward_mapped_reads) + "\t" +
+                          str(reverse_mapped_reads)+ "\t"+ str(total)+ "\n")
+
+rule infer_protocol_paired:
+    input:
+        bam = "bams/{sample}.paired.bam",
+        index = "bams/{sample}.paired.bam.bai",
+        gtf_bed = return_gtf_bed
+    output:
+        protocol = "protocol/{sample}.paired.txt"
+    message:
+        "Infer protocol paired-end: {wildcards.sample}"
+    run:
+        def read_bed_as_intervaltree(filepath):
+            bed_df = pybedtools.BedTool(filepath).sort().to_dataframe()
+            bed_df['chrom'] = bed_df['chrom'].astype(str)
+            bed_df['name'] = bed_df['name'].astype(str)
+            bed_grouped = bed_df.groupby('chrom')
+
+            bedint_tree = defaultdict(IntervalTree)
+            for chrom, df in bed_grouped:
+                df_list = zip(df['start'], df['end'], df['strand'])
+                for start, end, strand in df_list:
+                    bedint_tree[chrom].insert(start, end, strand)
+            return bedint_tree
+        def is_read_uniq_mapping(read):
+            if read.is_secondary:
+                return False
+            tags = dict(read.get_tags())
+            try:
+                nh_count = tags['NH']
+            except KeyError:
+                # Reliable in case of STAR
+                if read.mapping_quality == 255:
+                    return True
+                if read.mapping_quality < 1:
+                    return False
+                # NH tag not set so rely on flags
+                if read.flag in __SAM_NOT_UNIQ_FLAGS__:
+                    return False
+                else:
+                    raise RuntimeError('Malformed BAM?')
+            if nh_count == 1:
+                return True
+            return False
+        bam = input.bam
+        bed = input.gtf_bed
+        n_reads = 100000
+        if not os.path.exists(bam+".bai"):
+                pysam.index(bam)
+        #pysam.index(bam)
+        bam = pysam.AlignmentFile(bam, 'rb')
+        bed = read_bed_as_intervaltree(bed)
+        strandedness = Counter()
+        iteration = 0
+        for read in bam.fetch():
+            if not is_read_uniq_mapping(read):
+                continue
+            if read.is_reverse:
+                mapped_strand = '-'
+            else:
+                mapped_strand = '+'
+            mapped_start = read.reference_start
+            mapped_end = read.reference_end
+            chrom = read.reference_name
+            gene_strand = list(set(bed[chrom].find(mapped_start, mapped_end)))
+            if len(gene_strand) != 1:
+                # Filter out genes with ambiguous strand info
+                # (those) that have a tx_start on opposite strands
+                continue
+            gene_strand = gene_strand[0]
+            strandedness['{}{}'.format(mapped_strand, gene_strand)] += 1
+            iteration += 1
+            if iteration >= n_reads:
+                break
+        strandedness['++'] += 1
+        strandedness['--'] += 1
+        strandedness['+-'] += 1
+        strandedness['-+'] += 1
+
+        total = sum(strandedness.values())
+        forward_mapped_reads = (strandedness['++'] + strandedness['--']) / total
+        reverse_mapped_reads = (strandedness['-+'] + strandedness['+-']) / total
+        ratio = forward_mapped_reads / reverse_mapped_reads
+        if np.isclose([np.abs(forward_mapped_reads-0.5)], [0],atol=0.12):
+            with open(output[0],"w") as out:
+                out.write(wildcards.sample+"\t"+'unstranded'+"\t"+
+                          str(forward_mapped_reads) +"\t"+
+                          str(reverse_mapped_reads)+ "\t" + str(total)+"\n")
+        elif forward_mapped_reads >= 0.5:
+            with open(output[0],"w") as out:
+                out.write(wildcards.sample+"\t"+'forward'+ "\t"+
+                          str(forward_mapped_reads) + "\t" +
+                          str(reverse_mapped_reads)+"\t"+ str(total)+"\n")
+        else:
+            with open(output[0],"w") as out:
+                out.write(wildcards.sample+"\t"+'reverse'+ "\t" +
+                          str(forward_mapped_reads) + "\t" +
+                          str(reverse_mapped_reads)+ "\t"+ str(total)+ "\n")
+rule infer_experiment_single:
+    input:
+        bam = "bams/{sample}.single.bam",
+        gtf_bed = return_gtf_bed12
+    output:
+        "protocol/experiment/{sample}.single.txt"
+    message:
+        "Infer experiment single-end: {wildcards.sample}"
+    shell:
+        """
+         infer_experiment.py -r {input.gtf_bed} -i {input.bam} \
+         -s 400000 > {output}
+        """
+
+rule infer_experiment_paired:
+    input:
+        bam = "bams/{sample}.paired.bam",
+        index = "bams/{sample}.paired.bam.bai",
+        gtf_bed = return_gtf_bed12
+    output:
+        "protocol/experiment/{sample}.paired.txt"
+    message:
+        "Infer experiment paired-end: {wildcards.sample}"
+    shell:
+        """
+         infer_experiment.py -r {input.gtf_bed} -i {input.bam} \
+         -s 400000 > {output}
+        """
+rule protocol:
+    input:
+        expand('protocol/experiment/{sample}.single.txt',sample=GSM_SINGLE_DICT_KEYS),
+        expand("protocol/experiment/{sample}.paired.txt",sample=GSM_PAIRED_DICT_KEYS)
+    output:
+        file = "protocol_information.txt"
+    run:
+        files = glob.glob("protocol/experiment/*.txt")
+        outfile = open(output.file,"w")
+        for eachfile in sorted(files):
+            filename=os.path.basename(eachfile)
+            if filename.endswith("single.txt"):
+                gseid = filename.replace(".single.txt","")
+                for line in open(eachfile):
+                    if line !="\n" and line!="":
+                        if len(line) >=38:
+                            both=False
+                            if  line.startswith("Fraction of reads failed to determine"):
+                                und=float(line.strip().split(":")[1].strip())
+                            elif line.startswith('Fraction of reads explained by "++,--"'):
+                                pos=float(line.strip().split(":")[1].strip())
+                            elif line.startswith('Fraction of reads explained by "+-,-+"'):
+                                neg=float(line.strip().split(":")[1].strip())
+                                both=True
+                            if both:
+                                if und > 0.5:
+                                    outfile.write(gseid+"\tunstranded\n")
+                                elif pos >= 0.65:
+                                    outfile.write(gseid+"\tstranded\n")
+                                elif neg >= 0.65:
+                                    outfile.write(gseid+"\trevstranded\n")
+                                else:
+                                    outfile.write(gseid+"\tunstranded\n")
+            else:
+                gseid = filename.replace(".paired.txt","")
+                for line in open(eachfile):
+                    if line!="\n" and line!="":
+                        if len(line) >=38:
+                            both=False
+                            #outfile.write(line[:37])
+                            if  line.startswith("Fraction of reads failed to determine"):
+                                und=float(line.strip().split(":")[1].strip())
+                            elif line.startswith('Fraction of reads explained by "1++,1--,2+-,2-+"'):
+                                pos=float(line.strip().split(":")[1].strip())
+                            elif line.startswith('Fraction of reads explained by "1+-,1-+,2++,2--"'):
+                                neg=float(line.strip().split(":")[1].strip())
+                                both=True
+                            if both:
+                                if und > 0.5:
+                                    outfile.write(gseid+"\tunstranded\n")
+                                elif pos >= 0.65:
+                                    outfile.write(gseid+"\tstranded\n")
+                                elif neg >= 0.65:
+                                    outfile.write(gseid+"\trevstranded\n")
+                                else:
+                                    outfile.write(gseid+"\tunstranded\n")
+        outfile.close()
+
+rule createcountstable:
+        input:
+                expand('counts/{sample}.single.stranded.counts',sample=GSM_SINGLE_DICT_KEYS),
+                expand('counts/{sample}.single.unstranded.counts',sample=GSM_SINGLE_DICT_KEYS),
+                expand('counts/{sample}.single.revstranded.counts',sample=GSM_SINGLE_DICT_KEYS),
+                expand('counts/{sample}.paired.stranded.counts',sample=GSM_PAIRED_DICT_KEYS),
+                expand('counts/{sample}.paired.unstranded.counts',sample=GSM_PAIRED_DICT_KEYS),
+                expand('counts/{sample}.paired.revstranded.counts',sample=GSM_PAIRED_DICT_KEYS)
+        output:
+               "counts/success.txt"
+        message:
+                "Creating countstable"
+        run:
+                #import os
+                SPECIES_GSM={}
+                for line in open("list.txt"):
+                        if line!="\n" and line != "":
+                                elements = line.strip().split("\t")
+                                elements[2] = elements[2].replace(" ","_")
+                                #print(line,str(len(elements)))
+                                if len(elements) == 6 and elements[3].upper() == "RNA-SEQ":
+                                        try:
+                                                SPECIES_GSM[elements[2]].append(elements[5])
+                                        except KeyError:
+                                                SPECIES_GSM[elements[2]]=[]
+                                                SPECIES_GSM[elements[2]].append(elements[5])
+                                elif len(elements) == 3:
+                                        try:
+                                                SPECIES_GSM[elements[2]].append(elements[0])
+                                        except KeyError:
+                                                SPECIES_GSM[elements[2]]=[]
+                                                SPECIES_GSM[elements[2]].append(elements[0])
+                for species in SPECIES_GSM.keys():
+                        os.system("mkdir -p counts/"+species)
+                        for countfile in SPECIES_GSM[species]:
+                                os.system("mv counts/"+countfile+"* counts/"+species)
+                        rpath="~/panases_soft/anaconda3/envs/renv/bin/Rscript"
+                        command = rpath+ " ~/codes/RNAseq/createtable_htseq.R "\
+                        "counts/"+species+" "+ species
+                        os.system(command)
+                        shell("echo $(date) > {output}")
