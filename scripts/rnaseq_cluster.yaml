@@ -17,7 +17,25 @@ indexbam_paired:
     ntasks : "4"
 map_single_end:
     mem : "60000MB"
-    ntasks : "1"
+    ntasks : "4"
 map_paired_end:
     mem : "60000MB"
-    ntasks : "1"
+    ntasks : "4"
+quantify_single_unstranded:
+    mem : "16000MB"
+    ntasks : "4"
+quantify_single_stranded:
+    mem : "16000MB"
+    ntasks : "4"
+quantify_single_revstranded:
+    mem : "16000MB"
+    ntasks : "4"
+quantify_paired_unstranded:
+    mem : "16000MB"
+    ntasks : "4"
+quantify_paired_stranded:
+    mem : "16000MB"
+    ntasks : "4"
+quantify_paired_revstranded:
+    mem : "16000MB"
+    ntasks : "4"

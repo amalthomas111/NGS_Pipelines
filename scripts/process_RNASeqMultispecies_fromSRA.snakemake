@@ -236,7 +236,7 @@ rule map_single_end:
         'reads/{sample}_trimmed.fq.gz'
     output:
         bam   = 'bams/srr_bam/single/{sample}.bam',
-    threads: 1
+    threads: 4
     params:
         prefix = 'bams/srr_bam/single/{sample}.',
         index = return_star_index,
@@ -247,14 +247,14 @@ rule map_single_end:
         "logs/{sample}.map.log"
     shell:
         r"""
-        STAR --runThreadN 1 \
+        STAR --runThreadN {threads} \
         --genomeDir {params.index} \
         --outFileNamePrefix {params.prefix} --readFilesIn {input} \
         --readFilesCommand zcat \
         --quantMode GeneCounts \
         --outFilterMultimapNmax 1 \
         --outSAMtype BAM SortedByCoordinate \
-        --outBAMsortingThreadN 1 \
+        --outBAMsortingThreadN {threads} \
         --outReadsUnmapped {params.unmapped} && \
         mv {params.prefix}Aligned.sortedByCoord.out.bam {output.bam}
         """
@@ -264,7 +264,7 @@ rule map_paired_end:
         mate2 = 'reads/{sample}_2_val_2.fq.gz'
     output:
         bam   = 'bams/srr_bam/paired/{sample}.bam',
-    threads: 1
+    threads: 4
     params:
         prefix = 'bams/srr_bam/paired/{sample}.',
         index = return_star_index,
@@ -274,13 +274,13 @@ rule map_paired_end:
     shell:
         r"""
          STAR --genomeDir {params.index} \
-         --runThreadN 1 \
+         --runThreadN {threads} \
          --outFileNamePrefix {params.prefix} --readFilesIn {input.mate1} {input.mate2} \
          --outSAMtype BAM SortedByCoordinate \
          --outFilterMultimapNmax 1 \
          --readFilesCommand zcat \
          --quantMode GeneCounts \
-         --outBAMsortingThreadN 1 \
+         --outBAMsortingThreadN {threads} \
          --outReadsUnmapped {params.unmapped} && \
         mv {params.prefix}Aligned.sortedByCoord.out.bam {output.bam}
         """
@@ -703,9 +703,9 @@ rule protocol:
                             if both:
                                 if und > 0.5:
                                     outfile.write(gseid+"\tunstranded\n")
-                                elif pos >= 0.65:
+                                elif pos >= 0.57:
                                     outfile.write(gseid+"\tstranded\n")
-                                elif neg >= 0.65:
+                                elif neg >= 0.57:
                                     outfile.write(gseid+"\trevstranded\n")
                                 else:
                                     outfile.write(gseid+"\tunstranded\n")
@@ -726,9 +726,9 @@ rule protocol:
                             if both:
                                 if und > 0.5:
                                     outfile.write(gseid+"\tunstranded\n")
-                                elif pos >= 0.65:
+                                elif pos >= 0.57:
                                     outfile.write(gseid+"\tstranded\n")
-                                elif neg >= 0.65:
+                                elif neg >= 0.57:
                                     outfile.write(gseid+"\trevstranded\n")
                                 else:
                                     outfile.write(gseid+"\tunstranded\n")
