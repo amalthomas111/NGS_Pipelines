@@ -1,0 +1,317 @@
+import os,sys
+import pandas as pd
+
+if not os.path.exists("rnaseq_config.yaml"):
+        print("Error:rnaseq_config.yaml not found. Exiting!")
+        exit(1)
+if not os.path.exists("list.txt"):
+        print("Error:list.txt not found. You can create list.txt from"\
+              "runinfo file using srainfo.sh")
+        exit(1)
+
+configfile: 'rnaseq_config.yaml'
+SINGLE_SRR=[]
+PAIRED_SRR=[]
+SPECIES_SRR={}
+SPECIES_GSM={}
+GSM_SINGLE_DICT={}
+GSM_PAIRED_DICT={}
+
+specieslist = config["specieslist"]
+"""
+Input list.txt should be in this format:
+SRR306834	SINGLE	Pan_paniscus	RNA-Seq	cDNA	GSM752687
+SRR306835	SINGLE	Pan_paniscus	RNA-Seq	cDNA	GSM752688
+SRR306836	SINGLE	Pan_paniscus	RNA-Seq	cDNA	GSM752689
+SRR306837	SINGLE	Pan_paniscus	RNA-Seq	cDNA	GSM752690
+SRR306838	SINGLE	Homo_sapiens	RNA-Seq	cDNA	GSM752691
+SRR306839	SINGLE	Homo_sapiens	RNA-Seq	cDNA	GSM752692
+SRR306840	PAIRED	Homo_sapiens	RNA-Seq	cDNA	GSM752693
+First 3 columns are mandatory. if only first 3 columns are given
+then GSE columsn is assumed to be same as the first column and
+all samples are assumed to be be "RNA-Seq"
+"""
+
+for line in open("list.txt"):
+        if line!="\n" and line != "":
+                elements = line.strip().split("\t")
+                elements[2] = elements[2].replace(" ","_")
+                #print(line,str(len(elements)))
+                if len(elements) == 6 and elements[3].upper() == "RNA-SEQ":
+                        if elements[2] not in specieslist:
+                                print("*****NOT FOUND:",elements[0],elements[2])
+                                continue
+                        if elements[1].upper() == "SINGLE":
+                                SINGLE_SRR.append(elements[0])
+                                SPECIES_SRR[elements[0]]=elements[2]
+                                SPECIES_GSM[elements[5]]=elements[2]
+                                try:
+                                        GSM_SINGLE_DICT[elements[5]].append(elements[0])
+                                except KeyError:
+                                        GSM_SINGLE_DICT[elements[5]]=[]
+                                        GSM_SINGLE_DICT[elements[5]].append(elements[0])
+                        elif elements[1].upper() == "PAIRED":
+                                PAIRED_SRR.append(elements[0])
+                                SPECIES_SRR[elements[0]]=elements[2]
+                                SPECIES_GSM[elements[5]]=elements[2]
+                                try:
+                                        GSM_PAIRED_DICT[elements[5]].append(elements[0])
+                                except KeyError:
+                                        GSM_PAIRED_DICT[elements[5]]=[]
+                                        GSM_PAIRED_DICT[elements[5]].append(elements[0])
+                elif len(elements) == 3:
+                        if elements[2] not in specieslist:
+                                print("*****NOT FOUND:",elements[0],elements[2])
+                                continue
+                        if elements[1].upper() == "SINGLE":
+                                SINGLE_SRR.append(elements[0])
+                                SPECIES_SRR[elements[0]]=elements[2]
+                                SPECIES_GSM[elements[0]]=elements[2]
+                                try:
+                                        GSM_SINGLE_DICT[elements[0]].append(elements[0])
+                                except KeyError:
+                                        GSM_SINGLE_DICT[elements[0]]=[]
+                                        GSM_SINGLE_DICT[elements[0]].append(elements[0])
+                        elif elements[1].upper() == "PAIRED":
+                                PAIRED_SRR.append(elements[0])
+                                SPECIES_SRR[elements[0]]=elements[2]
+                                SPECIES_GSM[elements[0]]=elements[2]
+                                try:
+                                        GSM_PAIRED_DICT[elements[0]].append(elements[0])
+                                except KeyError:
+                                        GSM_PAIRED_DICT[elements[0]]=[]
+                                        GSM_PAIRED_DICT[elements[0]].append(elements[0])
+ALL_SRR = SINGLE_SRR + PAIRED_SRR
+GSM_SINGLE_DICT_KEYS = list(GSM_SINGLE_DICT.keys())
+GSM_PAIRED_DICT_KEYS = list(GSM_PAIRED_DICT.keys())
+
+print("Single end:\n",SINGLE_SRR,"\nGSM single dict:")
+print(GSM_SINGLE_DICT)
+print("======================\n")
+print("Paired end:\n",PAIRED_SRR,"\nGSM paired dict:")
+print(GSM_PAIRED_DICT)
+print("======================\n")
+
+print("GSM single keys:\n",GSM_SINGLE_DICT_KEYS)
+print("\nGSM paired keys:\n",GSM_PAIRED_DICT_KEYS)
+#print("All libs:\n",ALL_SRR)
+
+def return_kallisto_index(wildcards):
+        return(config["{}_kidx".format(SPECIES_GSM[wildcards.sample])])
+def merge_fq_single(wildcards):
+        #print("merge single:inputfile=",wildcards.sample)
+        return(["rawreads/{}.fastq.gz".format(srr) for srr in GSM_SINGLE_DICT[wildcards.sample]])
+def merge_fq_paired_r1(wildcards):
+        #print("merge paired r1:inputfile=",wildcards.sample)
+        return(["rawreads/{}_1.fastq.gz".format(srr) for srr in GSM_PAIRED_DICT[wildcards.sample]])
+def merge_fq_paired_r2(wildcards):
+        #print("merge paired r2:inputfile=",wildcards.sample)
+        return(["rawreads/{}_2.fastq.gz".format(srr) for srr in GSM_PAIRED_DICT[wildcards.sample]])
+def return_txdb(wildcards):
+        #print("merge paired r2:inputfile=",wildcards.sample)
+        return(config["{}_tx2gene".format(SPECIES_GSM[wildcards.sample])])
+
+rule all:
+    input:
+        expand("quant/single_unstranded/{sample}/abundance.tsv",sample=GSM_SINGLE_DICT_KEYS),
+        expand("quant/single_stranded/{sample}/abundance.tsv",sample=GSM_SINGLE_DICT_KEYS),
+        expand("quant/single_revstranded/{sample}/abundance.tsv",sample=GSM_SINGLE_DICT_KEYS),
+        expand("quant/paired_unstranded/{sample}/abundance.tsv",sample=GSM_PAIRED_DICT_KEYS),
+        expand("quant/paired_revstranded/{sample}/abundance.tsv",sample=GSM_PAIRED_DICT_KEYS),
+        expand("quant/paired_stranded/{sample}/abundance.tsv",sample=GSM_PAIRED_DICT_KEYS),
+        expand("abundance/success.txt")
+
+
+rule merge_fastq:
+    input: merge_fq_single
+    output:
+        temp("merged_fastq/single/{sample}.fq.gz")
+    message:
+        "Merging single fqs for:{wildcards.sample}"
+    run:
+        infiles = ' '.join(input)
+        shell(r""" cat {infiles} > {output}""")
+rule merge_fastq_R1:
+    input: merge_fq_paired_r1
+    output:
+        temp("merged_fastq/paired/{sample}_R1.fq.gz")
+    message:
+        "Merging paired R1 for:{wildcards.sample}"
+    run:
+        infiles = ' '.join(input)
+        shell(r""" cat {infiles} > {output}""")
+
+rule merge_fastq_R2:
+    input: merge_fq_paired_r2
+    output:
+        temp("merged_fastq/paired/{sample}_R2.fq.gz")
+    message:
+        "Merging paired R2 for:{wildcards.sample}"
+    run:
+        infiles = ' '.join(input)
+        shell(r""" cat {infiles} > {output}""")
+
+rule quantify_single_unstranded:
+    input:
+        r1 = "merged_fastq/single/{sample}.fq.gz",
+        idx = return_kallisto_index
+    output:
+        "quant/single_unstranded/{sample}/abundance.tsv"
+    params:
+        "quant/single_unstranded/{sample}"
+    message:
+        "Quant single-end unstranded:{wildcards.sample}"
+    threads: 4
+    shell:
+        r"""
+        kallisto quant -i {input.idx} -t {threads} --single -l 200 -s 20 \
+        -b 100 -o {params} <(zcat {input.r1})
+        """
+rule quantify_single_stranded:
+    input:
+        r1 = "merged_fastq/single/{sample}.fq.gz",
+        idx = return_kallisto_index
+    output:
+        "quant/single_stranded/{sample}/abundance.tsv"
+    params:
+        "quant/single_stranded/{sample}"
+    message:
+        "Quant single-end stranded:{wildcards.sample}"
+    threads: 4
+    shell:
+        r"""
+        kallisto quant -i {input.idx} -t {threads} --single -l 200 -s 20 \
+        -b 100 --fr-stranded -o {params} <(zcat {input.r1})
+        """
+rule quantify_single_revstranded:
+    input:
+        r1 = "merged_fastq/single/{sample}.fq.gz",
+        idx = return_kallisto_index
+    output:
+        "quant/single_revstranded/{sample}/abundance.tsv"
+    params:
+        "quant/single_revstranded/{sample}"
+    message:
+        "Quant single-end revstranded:{wildcards.sample}"
+    threads: 4
+    shell:
+        r"""
+        kallisto quant -i {input.idx} -t {threads} --single -l 200 -s 20 \
+        -b 100 --rf-stranded -o {params} <(zcat {input.r1})
+        """
+rule quantify_paired_unstranded:
+    input:
+        r1 = "merged_fastq/paired/{sample}_R1.fq.gz",
+        r2 = "merged_fastq/paired/{sample}_R2.fq.gz",
+        idx = return_kallisto_index
+    output:
+        "quant/paired_unstranded/{sample}/abundance.tsv"
+    params:
+        "quant/paired_unstranded/{sample}"
+    message:
+        "Quant paired-end unstranded:{wildcards.sample}"
+    threads: 4
+    shell:
+        r"""
+        kallisto quant -i {input.idx} -t {threads} -b 100 -o {params} \
+        <(zcat {input.r1}) <(zcat {input.r2})
+        """
+rule quantify_paired_stranded:
+    input:
+        r1 = "merged_fastq/paired/{sample}_R1.fq.gz",
+        r2 = "merged_fastq/paired/{sample}_R2.fq.gz",
+        idx = return_kallisto_index
+    output:
+        "quant/paired_stranded/{sample}/abundance.tsv"
+    params:
+        "quant/paired_stranded/{sample}"
+    message:
+        "Quant paired-end stranded:{wildcards.sample}"
+    threads: 4
+    shell:
+        r"""
+        kallisto quant -i {input.idx} -t {threads} -b 100 -o {params} \
+        --fr-stranded  <(zcat {input.r1}) <(zcat {input.r2})
+        """
+
+rule quantify_paired_revstranded:
+    input:
+        r1 = "merged_fastq/paired/{sample}_R1.fq.gz",
+        r2 = "merged_fastq/paired/{sample}_R2.fq.gz",
+        idx = return_kallisto_index
+    output:
+        "quant/paired_revstranded/{sample}/abundance.tsv"
+    params:
+        "quant/paired_revstranded/{sample}"
+    message:
+        "Quant paired-end revstraned:{wildcards.sample}"
+    threads: 4
+    shell:
+        r"""
+        kallisto quant -i {input.idx} -t {threads} -b 100 -o {params} \
+        --rf-stranded <(zcat {input.r1}) <(zcat {input.r2})
+        """
+rule create_kcounts:
+    input:
+        expand("quant/single_unstranded/{sample}/abundance.tsv",sample=GSM_SINGLE_DICT_KEYS),
+        expand("quant/single_stranded/{sample}/abundance.tsv",sample=GSM_SINGLE_DICT_KEYS),
+        expand("quant/single_revstranded/{sample}/abundance.tsv",sample=GSM_SINGLE_DICT_KEYS),
+        expand("quant/paired_unstranded/{sample}/abundance.tsv",sample=GSM_PAIRED_DICT_KEYS),
+        expand("quant/paired_revstranded/{sample}/abundance.tsv",sample=GSM_PAIRED_DICT_KEYS),
+        expand("quant/paired_stranded/{sample}/abundance.tsv",sample=GSM_PAIRED_DICT_KEYS),
+        "rnaseq_config.yaml","list.txt",
+        "/auto/rcf-40/amalthom/codes/RNAseq/snakemake/createcountsKallisto_list.R"
+    output:
+        file = "abundance/success.txt"
+    message:
+        "creating kallisto counts and abundances"
+    run:
+        SPECIES_GSM={}
+        lib_GSM={}
+        for line in open("list.txt"):
+            if line!="\n" and line != "":
+                elements = line.strip().split("\t")
+                elements[2] = elements[2].replace(" ","_")
+                if len(elements) == 6 and elements[3].upper() == "RNA-SEQ":
+                    lib_GSM[elements[5]] = elements[1]
+                    try:
+                        SPECIES_GSM[elements[2]].append(elements[5])
+                    except KeyError:
+                        SPECIES_GSM[elements[2]]=[]
+                        SPECIES_GSM[elements[2]].append(elements[5])
+                elif len(elements) == 3:
+                    lib_GSM[elements[0]] = elements[1]
+                    try:
+                            SPECIES_GSM[elements[2]].append(elements[0])
+                    except KeyError:
+                            SPECIES_GSM[elements[2]]=[]
+                            SPECIES_GSM[elements[2]].append(elements[0])
+
+        for species in SPECIES_GSM.keys():
+            filelist=[]
+            namelist=[]
+            for countfile in SPECIES_GSM[species]:
+                if lib_GSM[countfile].upper()=="SINGLE":
+                    for s in ["stranded","unstranded","revstranded"]:
+                        filelist.append("quant/single_"+s+"/"+countfile+"/abundance.tsv")
+                        namelist.append(countfile+".single."+s)
+                elif lib_GSM[countfile].upper()=="PAIRED":
+                    for s in ["stranded","unstranded","revstranded"]:
+                        filelist.append("quant/paired_"+s+"/"+countfile+"/abundance.tsv")
+                        namelist.append(countfile+".paired."+s)
+            #print("species:",species)
+            #print("filepath:",filelist)
+            #print("\nname:",namelist)
+            df = pd.DataFrame(list(zip(filelist,namelist)),columns= ["path","names"])
+            if not os.path.exists("temp"):
+                os.mkdirs("temp")
+            outputfile="temp/kfile_"+species+".txt"
+            df.to_csv(outputfile,sep="\t",index=False)
+            rpath="~/panases_soft/anaconda3/envs/renv/bin/Rscript"
+            rscript="~/codes/RNAseq/snakemake/createcountsKallisto_list.R"
+            command = rpath+" "+rscript+" "+outputfile+" "+species
+            print("\ncommand:",command)
+            if not os.path.exists("abundance/kallisto_"+species+"_abundances.tsv") or \
+               not os.path.exists("abundance/kallisto_"+species+"_counts.tsv"):
+                os.system(command)
+        shell("echo $(date) > {output}")
