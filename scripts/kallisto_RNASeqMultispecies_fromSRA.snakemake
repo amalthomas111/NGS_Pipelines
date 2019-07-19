@@ -331,7 +331,7 @@ rule create_kcounts:
             #print("\nname:",namelist)
             df = pd.DataFrame(list(zip(filelist,namelist)),columns= ["path","names"])
             if not os.path.exists("temp"):
-                os.mkdirs("temp")
+                os.mkdir("temp")
             outputfile="temp/kfile_"+species+".txt"
             df.to_csv(outputfile,sep="\t",index=False)
             rpath="~/panases_soft/anaconda3/envs/renv/bin/Rscript"
